@@ -1,0 +1,4 @@
+create a .env file with this format
+
+SERVER_IP=localhost
+SERVER_WEBSOCKET=ws://localhost:8080
