@@ -90,6 +90,7 @@ def transmit_audio():
                 # Conversie în bytes
                 audio_transcript = transcript_audio_chunk(audio_chunk)
                 print(f'audio_transcript: {audio_transcript}')
+                asyncio.run(send_trough_websocket(audio_transcript))
 
                  # Convertim buffer-ul în numpy array
                 #print(f"audio_chunk type: {type(audio_chunk_bytes)}, dtype: {audio_chunk_bytes.dtype}, shape: {audio_chunk_bytes.shape}")
@@ -114,8 +115,23 @@ def transcript_audio_chunk(audio_chunk) -> str:
         partial = json.loads(recognizer.PartialResult())
         return partial.get("partial", "")
 
-def send_trough_websocket(message: str):
-    pass
+async def send_trough_websocket(message: str):
+    try:
+        async with connect(WEBSOCKET_SERVER_IP) as websocket:
+            messageToSend = buildWebSocketMessage(message=message)
+            await websocket.send(json.dumps(messageToSend))
+            print(f'message ${message} sent succesfully')
+            
+    except Exception as e:
+        print("websocket connect failed " + str(e))
+        traceback.print_exc()
+
+def buildWebSocketMessage(message: str):
+    global WEBSOCKET_ID
+    return {
+        'sender_id': WEBSOCKET_ID,
+        'data': message
+    }
 
 async def connect_to_websocket_server():
     global WEBSOCKET_ID
