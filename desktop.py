@@ -33,7 +33,8 @@ SERVER_IP = dotenv.get_key(key_to_get='SERVER_IP', dotenv_path='.env')
 WEBSOCKET_SERVER_IP = dotenv.get_key(key_to_get='SERVER_WEBSOCKET', dotenv_path='.env')
 compres = compressor.Compressor()
 print(f"SERVER_IP: {SERVER_IP}")
-
+main_loop = None
+message_queue = None
 def guess_network_type():
     stats = psutil.net_if_stats()
     for iface, data in stats.items():
@@ -67,6 +68,7 @@ def receive_audio():
 
 def transmit_audio():
     global connected
+    global main_loop
     if not connected:
         update_status("❌ Nu ești conectat la un server!")
         return
@@ -90,8 +92,14 @@ def transmit_audio():
                 # Conversie în bytes
                 audio_transcript = transcript_audio_chunk(audio_chunk)
                 print(f'audio_transcript: {audio_transcript}')
-                asyncio.run(send_trough_websocket(audio_transcript))
-
+                if main_loop is None:
+                    print("⚠️ WS loop încă nu e pornit, mesajul NU va fi trimis acum")
+                else:
+                    future = asyncio.run_coroutine_threadsafe(producer(audio_transcript), main_loop)
+                    try:
+                        timeout = future.result(6)
+                    except Exception as e:
+                        print(e)
                  # Convertim buffer-ul în numpy array
                 #print(f"audio_chunk type: {type(audio_chunk_bytes)}, dtype: {audio_chunk_bytes.dtype}, shape: {audio_chunk_bytes.shape}")
                 compressed_data = compres.encode(bytearray(audio_chunk))
@@ -115,6 +123,13 @@ def transcript_audio_chunk(audio_chunk) -> str:
         partial = json.loads(recognizer.PartialResult())
         return partial.get("partial", "")
 
+async def producer(message):
+    """Simulează transcripturile generate de aplicația ta."""
+    msg = buildWebSocketMessage(message=message)
+    global message_queue
+    await message_queue.put(msg)  # bagă în coadă
+    print(f"message ${message} appended to queue")
+
 async def send_trough_websocket(message: str):
     try:
         async with connect(WEBSOCKET_SERVER_IP) as websocket:
@@ -129,13 +144,15 @@ async def send_trough_websocket(message: str):
 def buildWebSocketMessage(message: str):
     global WEBSOCKET_ID
     return {
+        'type': 'MSG',
         'sender_id': WEBSOCKET_ID,
         'data': message
     }
 
-async def connect_to_websocket_server():
+async def connect_to_websocket_server(): #consumer
     global WEBSOCKET_ID
     print(WEBSOCKET_SERVER_IP)
+    global message_queue
     try:
         async with connect(WEBSOCKET_SERVER_IP) as websocket:
             await websocket.send(json.dumps({ 'type': 'CONN'}))
@@ -144,10 +161,40 @@ async def connect_to_websocket_server():
             print(f'websocket id received: ${data}')
             WEBSOCKET_ID = data['id']
             print(WEBSOCKET_ID)
+
+            while True:
+                message = await message_queue.get()
+                if (len(message) == 0):
+                    return
+                try:
+                    await websocket.send(json.dumps(message))
+                    print(f"📤 Sent: {message}")
+                except Exception as e:
+                    print("❌ Failed to send:", e)
+                finally:
+                    message_queue.task_done()
     except Exception as e:
         print("websocket connect failed " + str(e))
         traceback.print_exc()
 
+def start_ws_loop():
+    global main_loop, message_queue
+    # Cream loop-ul nou (pentru acel thread)
+    main_loop = asyncio.new_event_loop()
+    # setam loop-ul curent pentru acest thread (utile pentru asyncio intern)
+    asyncio.set_event_loop(main_loop)
+    # cream coada legata de acest loop
+    message_queue = asyncio.Queue()
+    # rulam consumerul (blocheaza acest thread atata timp cat serverul functioneaza)
+    try:
+        main_loop.run_until_complete(connect_to_websocket_server())
+    finally:
+        # curatare daca se opreste
+        pending = asyncio.all_tasks(loop=main_loop)
+        for t in pending:
+            t.cancel()
+        main_loop.run_until_complete(main_loop.shutdown_asyncgens())
+        main_loop.close()
 
 def connect_to_server():
     global sock, connected
@@ -256,5 +303,5 @@ status_label = tk.Label(root, text="Neconectat.", fg="gray")
 status_label.pack(pady=20)
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
-asyncio.run(connect_to_websocket_server())
+threading.Thread(target=start_ws_loop, daemon=True).start()
 root.mainloop()
