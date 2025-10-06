@@ -35,6 +35,8 @@ compres = compressor.Compressor()
 print(f"SERVER_IP: {SERVER_IP}")
 main_loop = None
 message_queue = None
+last_sent = ""
+
 def guess_network_type():
     stats = psutil.net_if_stats()
     for iface, data in stats.items():
@@ -91,15 +93,17 @@ def transmit_audio():
                     continue
                 # Conversie în bytes
                 audio_transcript = transcript_audio_chunk(audio_chunk)
-                print(f'audio_transcript: {audio_transcript}')
+                global last_sent
+                last_sent = audio_transcript
                 if main_loop is None:
                     print("⚠️ WS loop încă nu e pornit, mesajul NU va fi trimis acum")
                 else:
-                    future = asyncio.run_coroutine_threadsafe(producer(audio_transcript), main_loop)
-                    try:
-                        timeout = future.result(6)
-                    except Exception as e:
-                        print(e)
+                    pass
+                    #future = asyncio.run_coroutine_threadsafe(producer(audio_transcript), main_loop)
+                    #try:
+                    #    timeout = future.result(6)
+                    #except Exception as e:
+                    #    print(e)
                  # Convertim buffer-ul în numpy array
                 #print(f"audio_chunk type: {type(audio_chunk_bytes)}, dtype: {audio_chunk_bytes.dtype}, shape: {audio_chunk_bytes.shape}")
                 compressed_data = compres.encode(bytearray(audio_chunk))
@@ -112,6 +116,7 @@ def transmit_audio():
         update_status(f"Eroare la transmitere: {e}")
     finally:
         update_status("[🛑] Transmitere oprită.")
+
 
 def transcript_audio_chunk(audio_chunk) -> str:
     audio_bytes = bytes(audio_chunk)
@@ -129,17 +134,6 @@ async def producer(message):
     global message_queue
     await message_queue.put(msg)  # bagă în coadă
     print(f"message ${message} appended to queue")
-
-async def send_trough_websocket(message: str):
-    try:
-        async with connect(WEBSOCKET_SERVER_IP) as websocket:
-            messageToSend = buildWebSocketMessage(message=message)
-            await websocket.send(json.dumps(messageToSend))
-            print(f'message ${message} sent succesfully')
-            
-    except Exception as e:
-        print("websocket connect failed " + str(e))
-        traceback.print_exc()
 
 def buildWebSocketMessage(message: str):
     global WEBSOCKET_ID
@@ -269,15 +263,39 @@ def disconnect_from_server(stars):
 
 def on_push_to_talk_press(event=None):
     global push_to_talk_btn_pressed
+    global last_sent
+    last_sent = ""
     push_to_talk_btn_pressed = True
     print("Push to Talk pressed")  # debug
     threading.Thread(target=transmit_audio, daemon=True).start()
 
 
 def on_push_to_talk_release(event=None):
-    global push_to_talk_btn_pressed
+    global push_to_talk_btn_pressed, last_sent, main_loop, recognizer
+
     push_to_talk_btn_pressed = False
     print("Pushed to talk: STOP")
+
+    try:
+        # finalizează sesiunea Vosk — ia tot ce a mai rămas în buffer
+        final_result = json.loads(recognizer.FinalResult())
+        final_text = final_result.get("text", "").strip()
+
+        if final_text:
+            last_sent = final_text
+            print(f"[🎤] Final recognized text: {final_text}")
+            # trimite rezultatul final în coadă, pentru WebSocket
+            future = asyncio.run_coroutine_threadsafe(producer(last_sent), main_loop)
+        else:
+            print("[🎤] Nimic de trimis (rezultat gol).")
+
+    except Exception as e:
+        print(f"Vosk finalization error: {e}")
+
+    finally:
+        recognizer.Reset()
+        last_sent = ""
+
 
 
 def update_status(message):
