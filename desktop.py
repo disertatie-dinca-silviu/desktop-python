@@ -17,7 +17,7 @@ import asyncio
 from websockets.asyncio.client import connect
 import uuid
 import traceback
-
+from tkinter import messagebox
 
 # Load environment variables        
 CHUNK_SIZE = 2048
@@ -161,7 +161,8 @@ async def connect_to_websocket_server(): #consumer
             print(f'websocket id received: ${data}')
             WEBSOCKET_ID = data['id']
             print(WEBSOCKET_ID)
-
+            # Creează task-ul pentru receive (background, pe același websocket)
+            receive_task = asyncio.create_task(websocket_receiver(websocket))
             while True:
                 message = await message_queue.get()
                 if (len(message) == 0):
@@ -176,6 +177,46 @@ async def connect_to_websocket_server(): #consumer
     except Exception as e:
         print("websocket connect failed " + str(e))
         traceback.print_exc()
+
+async def websocket_receiver(websocket):  # Task separat pentru receive, pe websocket-ul comun
+    """Ascultă mesaje incoming pe websocket-ul dat."""
+    try:
+        while True:
+            try:
+                message = await websocket.recv()
+                data = json.loads(message)
+                print(f"📥 Received: {data}")
+                await handle_incoming_message(data)  # Procesează (ca înainte)
+            except Exception as e:
+                print(f"❌ Error receiving: {e}")
+                await asyncio.sleep(1)  # Retry mic
+    except asyncio.CancelledError:
+        print("Receiver task cancelled – closing.")
+    except Exception as e:
+        print("Receiver failed: " + str(e))
+        traceback.print_exc()
+
+# handle_incoming_message rămâne la fel ca în propunerea anterioară
+async def handle_incoming_message(data: dict):
+    msg_type = data.get('type')
+    global WEBSOCKET_ID
+    if msg_type == 'WARN':
+        sender_id = data.get('sender_id')
+        message = data.get('message', '')
+        actual_language_score = data.get('actual_score', 100)
+        
+        if sender_id == WEBSOCKET_ID:
+            messagebox.showinfo("avertizare", f"scorul tau a fost scazutla {actual_language_score} puncte pt limbaj toxic")
+
+            #root.after(0, lambda: update_status(f"📨 De la {sender_id}: {message}"))
+            root.after(0, lambda: update_language_score(f' Language score: {actual_language_score}'))
+
+        
+    elif msg_type == 'TOXICITY_RESPONSE':
+        # Parsează în ToxicityResponse dacă e JSON valid
+        pass  # Extinde după nevoie
+    else:
+        print(f"Tip necunoscut: {msg_type}")
 
 def start_ws_loop():
     global main_loop, message_queue
@@ -244,6 +285,10 @@ def update_status(message):
         status_label.config(text=message)
     root.after(0, setter)
 
+def update_language_score(score):
+    def setter():
+        language_score.config(text=score)
+    root.after(0, setter)
 
 def on_closing():
     if not connected:
@@ -300,8 +345,9 @@ push_to_talk_btn.bind("<ButtonPress>", on_push_to_talk_press)
 push_to_talk_btn.bind("<ButtonRelease>", on_push_to_talk_release)
 
 status_label = tk.Label(root, text="Neconectat.", fg="gray")
+language_score = tk.Label(root, text='Language score: 100', fg="red")
 status_label.pack(pady=20)
-
+language_score.pack(pady=5)  # Adaugă-l sub status, cu un pic de spațiu
 root.protocol("WM_DELETE_WINDOW", on_closing)
 threading.Thread(target=start_ws_loop, daemon=True).start()
 root.mainloop()
