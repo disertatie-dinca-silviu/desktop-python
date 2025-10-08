@@ -19,6 +19,8 @@ import uuid
 import traceback
 from tkinter import messagebox
 
+recognizer_lock = threading.Lock()
+
 # Load environment variables        
 CHUNK_SIZE = 2048
 CHANNELS = 1
@@ -91,21 +93,14 @@ def transmit_audio():
                 if overflowed:
                     print("⚠️ Buffer overflow!")
                     continue
+
+                if not audio_chunk or len(audio_chunk) == 0:
+                    continue
+
                 # Conversie în bytes
                 audio_transcript = transcript_audio_chunk(audio_chunk)
                 global last_sent
                 last_sent = audio_transcript
-                if main_loop is None:
-                    print("⚠️ WS loop încă nu e pornit, mesajul NU va fi trimis acum")
-                else:
-                    pass
-                    #future = asyncio.run_coroutine_threadsafe(producer(audio_transcript), main_loop)
-                    #try:
-                    #    timeout = future.result(6)
-                    #except Exception as e:
-                    #    print(e)
-                 # Convertim buffer-ul în numpy array
-                #print(f"audio_chunk type: {type(audio_chunk_bytes)}, dtype: {audio_chunk_bytes.dtype}, shape: {audio_chunk_bytes.shape}")
                 compressed_data = compres.encode(bytearray(audio_chunk))
                 print(f"Transmitting chunk of size {len(compressed_data)} bytes, seq: {seq_number}, timestamp: {timestamp}")
                 packet = header + compressed_data
@@ -119,15 +114,15 @@ def transmit_audio():
 
 
 def transcript_audio_chunk(audio_chunk) -> str:
+    global recognizer_lock   
     audio_bytes = bytes(audio_chunk)
-                
-    if recognizer.AcceptWaveform(audio_bytes):
-        result = json.loads(recognizer.Result())
-        return result.get("text", "")
-    else:
-        partial = json.loads(recognizer.PartialResult())
-        return partial.get("partial", "")
-
+    with recognizer_lock:  # 🔒 protejăm accesul
+        if recognizer.AcceptWaveform(audio_bytes):
+            result = json.loads(recognizer.Result())
+            return result.get("text", "")
+        else:
+            partial = json.loads(recognizer.PartialResult())
+            return partial.get("partial", "")
 async def producer(message):
     """Simulează transcripturile generate de aplicația ta."""
     msg = buildWebSocketMessage(message=message)
@@ -277,14 +272,14 @@ def on_push_to_talk_release(event=None):
     print("Pushed to talk: STOP")
 
     try:
-        # finalizează sesiunea Vosk — ia tot ce a mai rămas în buffer
-        final_result = json.loads(recognizer.FinalResult())
-        final_text = final_result.get("text", "").strip()
+        with recognizer_lock:  # 🔒 blocăm accesul la recognizer
+            final_result = json.loads(recognizer.FinalResult())
+            final_text = final_result.get("text", "").strip()
+            recognizer.Reset()
 
         if final_text:
             last_sent = final_text
             print(f"[🎤] Final recognized text: {final_text}")
-            # trimite rezultatul final în coadă, pentru WebSocket
             future = asyncio.run_coroutine_threadsafe(producer(last_sent), main_loop)
         else:
             print("[🎤] Nimic de trimis (rezultat gol).")
