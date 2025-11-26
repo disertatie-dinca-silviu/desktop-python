@@ -123,19 +123,23 @@ def transcript_audio_chunk(audio_chunk) -> str:
         else:
             partial = json.loads(recognizer.PartialResult())
             return partial.get("partial", "")
-async def producer(message):
+        
+# ### [MODIFICARE 3] Adăugat parametru timestamp_start
+async def producer(message, timestamp_start):
     """Simulează transcripturile generate de aplicația ta."""
-    msg = buildWebSocketMessage(message=message)
+    msg = buildWebSocketMessage(message, timestamp_start) # ### [MODIFICARE 4] Pasare mai departe
     global message_queue
-    await message_queue.put(msg)  # bagă în coadă
-    print(f"message ${message} appended to queue")
+    await message_queue.put(msg) 
+    print(f"message {message} appended to queue (TS: {timestamp_start})")
 
-def buildWebSocketMessage(message: str):
+# ### [MODIFICARE 5] Adăugat parametru și cheie în JSON
+def buildWebSocketMessage(message: str, timestamp_start: float):
     global WEBSOCKET_ID
     return {
         'type': 'MSG',
         'sender_id': WEBSOCKET_ID,
-        'data': message
+        'data': message,
+        'client_ts': timestamp_start # ### [CRITIC] Acesta este T0
     }
 
 async def connect_to_websocket_server(): #consumer
@@ -192,13 +196,33 @@ async def handle_incoming_message(data: dict):
     if msg_type == 'WARN':
         sender_id = data.get('sender_id')
         message = data.get('message', '')
+        
+        origin_ts = data.get('origin_ts')
+        t1 = time.time()
+        print(f'origin time: ${origin_ts} si t1 este ${t1}')
+    
         actual_language_score = data.get('actual_score', 100)
         
         if sender_id == WEBSOCKET_ID:
-            messagebox.showinfo("avertizare", f"scorul tau a fost scazutla {actual_language_score} puncte pt limbaj toxic")
+            if origin_ts:
+                # Calculăm diferența
+                latency_ms = (t1 - origin_ts) * 1000
+                print(f"\n[⏱️ LATENCY] End-to-End: {latency_ms:.2f} ms\n")
+                latency_str = f"\nLatență: {latency_ms:.0f} ms"
+                
+                # ### [MODIFICARE 8 - OPTIONAL] Trimitem raportul înapoi la server pt grafice
+                log_payload = {
+                    'type': 'LOG_LATENCY',
+                    'sender_id': WEBSOCKET_ID,
+                    'latency': round(latency_ms, 2),
+                }
+                
+                await message_queue.put(log_payload)
+        
+        messagebox.showinfo("avertizare", f"scorul tau a fost scazutla {actual_language_score} puncte pt limbaj toxic")
 
-            #root.after(0, lambda: update_status(f"📨 De la {sender_id}: {message}"))
-            root.after(0, lambda: update_language_score(f' Language score: {actual_language_score}'))
+        #root.after(0, lambda: update_status(f"📨 De la {sender_id}: {message}"))
+        root.after(0, lambda: update_language_score(f' Language score: {actual_language_score}'))
 
         
     elif msg_type == 'TOXICITY_RESPONSE':
@@ -278,9 +302,11 @@ def on_push_to_talk_release(event=None):
             recognizer.Reset()
 
         if final_text:
+            # ### [MODIFICARE 1] CAPTURĂM TIMPUL T0
+            t0 = time.time()
             last_sent = final_text
             print(f"[🎤] Final recognized text: {final_text}")
-            future = asyncio.run_coroutine_threadsafe(producer(last_sent), main_loop)
+            future = asyncio.run_coroutine_threadsafe(producer(last_sent,t0), main_loop)
         else:
             print("[🎤] Nimic de trimis (rezultat gol).")
 
