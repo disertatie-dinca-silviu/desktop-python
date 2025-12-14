@@ -19,6 +19,63 @@ import uuid
 import traceback
 from tkinter import messagebox
 
+import sys
+
+def get_model_path(model_name):
+    """
+    Caută modelul în următoarea ordine:
+    1. Lângă executabil (.exe) - Recomandat pentru modele mari.
+    2. În folderul temporar (_MEIPASS) - Dacă l-ai fi împachetat în interior.
+    3. În folderul curent (Dev mode).
+    """
+    # Calea 1: Lângă executabil (sau script în dev)
+    if getattr(sys, 'frozen', False):
+        # Dacă rulăm ca exe, folderul aplicației este unde e exe-ul
+        application_path = os.path.dirname(sys.executable)
+    else:
+        # Dacă rulăm ca script .py
+        application_path = os.path.dirname(os.path.abspath(__file__))
+    
+    path_next_to_exe = os.path.join(application_path, model_name)
+    
+    # Verificăm dacă există lângă exe
+    if os.path.exists(path_next_to_exe):
+        return path_next_to_exe
+        
+    # Calea 2: În folderul temporar (PyInstaller _MEIPASS)
+    try:
+        if hasattr(sys, '_MEIPASS'):
+            path_internal = os.path.join(sys._MEIPASS, model_name)
+            if os.path.exists(path_internal):
+                return path_internal
+    except Exception:
+        pass
+
+    # Dacă nu e nicăieri, returnăm calea de lângă exe ca să apară în eroare
+    return path_next_to_exe
+
+#model = Model("vosk-model-small-en-us-0.15")
+
+MODEL_NAME = "vosk-model-small-en-us-0.15"
+model_path = get_model_path(MODEL_NAME)
+
+if not os.path.exists(model_path):
+    # Inițializăm o fereastră ascunsă pentru eroare
+    error_root = tk.Tk()
+    error_root.withdraw()
+    
+    messagebox.showerror(
+        "Eroare Critică - Model Lipsă", 
+        f"Nu am găsit folderul modelului!\n\n"
+        f"Am căutat aici:\n{model_path}\n\n"
+        f"Te rog copiază folderul '{MODEL_NAME}' exact lângă fișierul .exe."
+    )
+    error_root.destroy()
+    sys.exit(1)
+
+print(f"Model găsit la: {model_path}")
+model = Model(model_path)
+
 recognizer_lock = threading.Lock()
 
 # Load environment variables        
@@ -27,7 +84,7 @@ CHANNELS = 1
 SAMPLE_RATE = 16000
 WEBSOCKET_ID = None
 # Încarcă modelul (doar o dată, la startup)
-model = Model("vosk-model-small-en-us-0.15")
+
 recognizer = KaldiRecognizer(model, SAMPLE_RATE)
 sock = None
 connected = False
@@ -63,10 +120,12 @@ def receive_audio():
                if len(data) <= 16:
                     continue  # Pachet invalid sau doar header, ignoră
                 
-               audio_dataaudio_data_bytes = compres.decode(data)
-               audio_data = np.frombuffer(audio_dataaudio_data_bytes, dtype=np.int16.astype('<i2'))
+               payload = data[32:]
+               audio_bytes = compres.decode(payload)
+               audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
                stream.write(audio_data)
     except Exception as e:
+        print(e)
         update_status(f"Eroare la recepție: {e}")
 
 
